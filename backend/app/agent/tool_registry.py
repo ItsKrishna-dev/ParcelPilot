@@ -10,9 +10,13 @@ TOOLS = [
         "function": {
             "name": "doc_search",
             "description": (
-                "Search ParcelPilot's policies, SOPs, product documentation, and customer "
-                "agreements. Deprecated documents are excluded by default -- only pass "
-                "allow_deprecated=true if the user explicitly asks about historical/old policy."
+                "Search ParcelPilot source documents. For cancellation or service-credit "
+                "questions, search the SOP and the relevant customer agreement. For SLA "
+                "questions, search the support policy and relevant customer agreement. "
+                "For product-status or bug questions, search product_ops. Prefer the "
+                "smallest relevant doc_types list. Deprecated documents are excluded by "
+                "default and may only be included when the user explicitly asks about "
+                "historical policy."
             ),
             "parameters": {
                 "type": "object",

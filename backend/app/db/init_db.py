@@ -25,15 +25,19 @@ def main():
     Base.metadata.create_all(engine)
 
     with engine.begin() as conn:
-        try:
-            with open("app/db/rls_policies.sql") as f:
-                sql = f.read()
-            for stmt in sql.split(";"):
-                stmt = stmt.strip()
-                if stmt:
-                    conn.execute(text(stmt))
-        except Exception as e:
-            print(f"[init_db] RLS setup skipped/already applied: {e}")
+        with open("app/db/rls_policies.sql") as file:
+            sql = file.read()
+
+        statements = [
+            statement.strip()
+            for statement in sql.split(";")
+            if statement.strip()
+        ]
+
+        for statement in statements:
+            conn.execute(text(statement))
+
+        print("[init_db] RLS policies applied.")
 
     db = SessionLocal()
     try:

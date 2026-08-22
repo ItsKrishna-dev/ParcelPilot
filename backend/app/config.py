@@ -1,47 +1,72 @@
 """
-Central configuration. Nothing else in the codebase should read os.environ directly or
-call datetime.now() for business-logic "current time" -- always import DATASET_SNAPSHOT_TIME
-from here so answers stay reproducible against the fixed dataset snapshot.
-"""
-from datetime import datetime
-from pydantic_settings import BaseSettings
-from pydantic import Field
+Central application configuration.
 
+The .env file is resolved relative to the repository root rather than the current
+working directory. This allows commands to work consistently whether they are run
+from the project root or from backend/.
+"""
+
+from datetime import datetime
+from pathlib import Path
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ENV_FILE = PROJECT_ROOT / ".env"
 
 class Settings(BaseSettings):
-    database_url: str = Field(default="postgresql+psycopg2://parcelpilot:parcelpilot@localhost:5432/parcelpilot")
-
+    database_url: str = Field(
+        default=(
+            "postgresql+psycopg2://parcelpilot:parcelpilot"
+            "@localhost:5433/parcelpilot"
+        )
+    )
+    groq_max_tokens: int = Field(default=1024)
     nvidia_nim_api_key: str = Field(default="")
-    nvidia_nim_base_url: str = Field(default="https://integrate.api.nvidia.com/v1")
-    nvidia_nim_model: str = Field(default="nvidia/llama-3.1-nemotron-70b-instruct")
+    nvidia_nim_base_url: str = Field(
+        default="https://integrate.api.nvidia.com/v1"
+    )
+    nvidia_nim_model: str = Field(
+        default="nvidia/llama-3.1-nemotron-70b-instruct"
+    )
 
     groq_api_key: str = Field(default="")
-    groq_base_url: str = Field(default="https://api.groq.com/openai/v1")
+    groq_base_url: str = Field(
+        default="https://api.groq.com/openai/v1"
+    )
     groq_model: str = Field(default="llama-3.3-70b-versatile")
 
     llm_primary_provider: str = Field(default="nvidia")
     llm_fallback_provider: str = Field(default="groq")
 
-    embedding_model: str = Field(default="sentence-transformers/all-MiniLM-L6-v2")
+    embedding_model: str = Field(
+        default="sentence-transformers/all-MiniLM-L6-v2"
+    )
 
-    dataset_snapshot_time: str = Field(default="2026-08-16T11:00:00+05:30")
+    dataset_snapshot_time: str = Field(
+        default="2026-08-16T11:00:00+05:30"
+    )
     app_secret_key: str = Field(default="change_me_in_production")
     manager_approval_threshold_inr: float = Field(default=1000.0)
     pending_action_ttl_seconds: int = Field(default=600)
 
-    class Config:
-        env_file = ".env"
-        extra = "ignore"
+    model_config = SettingsConfigDict(
+        env_file=str(ENV_FILE),
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=False,
+    )
 
 
 settings = Settings()
 
 
 def dataset_snapshot_time() -> datetime:
-    """The single source of truth for 'now' across the whole system.
+    """
+    Return the fixed assessment snapshot time.
 
-    Every SLA / cancellation-window / credit-eligibility calculation MUST call this
-    instead of datetime.now(), so the system's answers are reproducible against the
-    fixed dataset snapshot regardless of when the grader actually runs it.
+    Never use datetime.now() for cancellation, credit, or SLA calculations.
     """
     return datetime.fromisoformat(settings.dataset_snapshot_time)

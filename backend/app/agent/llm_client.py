@@ -1,52 +1,216 @@
 """
-LLM adapter with automatic failover: NVIDIA NIM primary -> Groq fallback. Both are free-
-tier, OpenAI-compatible chat-completions APIs, so a single adapter interface covers both --
-no OpenAI dependency anywhere in this codebase.
+LLM provider adapter with failover.
 
-This directly implements the JD line "debug, test, deploy, and monitor reliable production
-systems": a provider outage or free-tier rate-limit on NVIDIA NIM does not take the whole
-agent down.
+Supported providers:
+- NVIDIA NIM
+- Groq
+
+Both providers expose OpenAI-compatible chat-completions APIs. The adapter
+normalizes provider aliases so values such as "nvidia", "nvidia_nim", or
+"nim" resolve consistently.
 """
+
+from dataclasses import dataclass
+
 import httpx
+
 from app.config import settings
 
 
 class LLMProviderError(Exception):
-    pass
+    """Raised when all configured LLM providers fail."""
 
 
-def _call_provider(base_url: str, api_key: str, model: str, messages: list[dict],
-                    tools: list[dict] | None, timeout: float = 30.0) -> dict:
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    body: dict = {"model": model, "messages": messages, "temperature": 0.1}
+@dataclass(frozen=True)
+class ProviderConfig:
+    name: str
+    base_url: str
+    api_key: str
+    model: str
+
+
+PROVIDER_ALIASES = {
+    "nvidia": "nvidia",
+    "nvidia_nim": "nvidia",
+    "nim": "nvidia",
+    "groq": "groq",
+}
+
+
+def _normalize_provider_name(provider_name: str) -> str:
+    normalized = (provider_name or "").strip().lower()
+    resolved = PROVIDER_ALIASES.get(normalized)
+
+    if resolved is None:
+        supported = ", ".join(sorted(PROVIDER_ALIASES))
+        raise LLMProviderError(
+            f"Unsupported LLM provider '{provider_name}'. "
+            f"Supported names: {supported}."
+        )
+
+    return resolved
+
+
+def _provider_configs() -> dict[str, ProviderConfig]:
+    return {
+        "nvidia": ProviderConfig(
+            name="nvidia",
+            base_url=settings.nvidia_nim_base_url.rstrip("/"),
+            api_key=settings.nvidia_nim_api_key.strip(),
+            model=settings.nvidia_nim_model.strip(),
+        ),
+        "groq": ProviderConfig(
+            name="groq",
+            base_url=settings.groq_base_url.rstrip("/"),
+            api_key=settings.groq_api_key.strip(),
+            model=settings.groq_model.strip(),
+        ),
+    }
+
+
+def _build_request_body(
+    model: str,
+    messages: list[dict],
+    tools: list[dict] | None,
+) -> dict:
+    body = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.1,
+        "max_tokens": settings.groq_max_tokens,
+    }
+
     if tools:
         body["tools"] = tools
         body["tool_choice"] = "auto"
-    resp = httpx.post(f"{base_url}/chat/completions", headers=headers, json=body, timeout=timeout)
-    resp.raise_for_status()
-    return resp.json()
+
+    return body
 
 
-def chat_completion(messages: list[dict], tools: list[dict] | None = None) -> dict:
-    """Tries the primary provider first; on ANY failure (timeout, rate limit, 5xx, network
-    error) falls back to the secondary provider. Raises LLMProviderError only if both fail,
-    which the orchestrator treats as an escalation trigger (never a silent wrong answer)."""
-    providers = {
-        "nvidia": (settings.nvidia_nim_base_url, settings.nvidia_nim_api_key, settings.nvidia_nim_model),
-        "groq": (settings.groq_base_url, settings.groq_api_key, settings.groq_model),
+def _call_provider(
+    provider: ProviderConfig,
+    messages: list[dict],
+    tools: list[dict] | None,
+    timeout_seconds: float = 60.0,
+) -> dict:
+    if not provider.api_key:
+        raise LLMProviderError(
+            f"No API key configured for provider '{provider.name}'."
+        )
+
+    if not provider.base_url:
+        raise LLMProviderError(
+            f"No base URL configured for provider '{provider.name}'."
+        )
+
+    if not provider.model:
+        raise LLMProviderError(
+            f"No model configured for provider '{provider.name}'."
+        )
+
+    endpoint = f"{provider.base_url}/chat/completions"
+
+    headers = {
+        "Authorization": f"Bearer {provider.api_key}",
+        "Content-Type": "application/json",
     }
-    order = [settings.llm_primary_provider, settings.llm_fallback_provider]
 
-    last_error = None
-    for provider_name in order:
-        base_url, api_key, model = providers[provider_name]
-        if not api_key:
-            last_error = f"{provider_name}: no API key configured"
-            continue
+    body = _build_request_body(
+        model=provider.model,
+        messages=messages,
+        tools=tools,
+    )
+
+    try:
+        response = httpx.post(
+            endpoint,
+            headers=headers,
+            json=body,
+            timeout=httpx.Timeout(
+                timeout_seconds,
+                connect=10.0,
+            ),
+        )
+    except httpx.TimeoutException as error:
+        raise LLMProviderError(
+            f"Provider '{provider.name}' timed out."
+        ) from error
+    except httpx.RequestError as error:
+        raise LLMProviderError(
+            f"Provider '{provider.name}' request failed: {error}"
+        ) from error
+
+    if response.status_code >= 400:
+        detail = response.text[:1000]
+
+        raise LLMProviderError(
+            f"Provider '{provider.name}' returned HTTP "
+            f"{response.status_code}: {detail}"
+        )
+
+    try:
+        payload = response.json()
+    except ValueError as error:
+        raise LLMProviderError(
+            f"Provider '{provider.name}' returned invalid JSON."
+        ) from error
+
+    if not isinstance(payload, dict):
+        raise LLMProviderError(
+            f"Provider '{provider.name}' returned an invalid response object."
+        )
+
+    if "choices" not in payload or not payload["choices"]:
+        raise LLMProviderError(
+            f"Provider '{provider.name}' response has no choices."
+        )
+
+    return payload
+
+
+def _provider_order() -> list[str]:
+    primary = _normalize_provider_name(
+        settings.llm_primary_provider
+    )
+
+    fallback = _normalize_provider_name(
+        settings.llm_fallback_provider
+    )
+
+    # Avoid calling the same provider twice if both environment variables
+    # resolve to the same canonical provider.
+    return list(dict.fromkeys([primary, fallback]))
+
+
+def chat_completion(
+    messages: list[dict],
+    tools: list[dict] | None = None,
+) -> dict:
+    """
+    Call the configured primary provider and fall back to the secondary provider.
+
+    Any provider failure is isolated. The function raises only if every
+    configured provider fails, allowing the orchestrator to return a controlled
+    escalation instead of a 500 response.
+    """
+    configs = _provider_configs()
+    errors: list[str] = []
+
+    for provider_name in _provider_order():
+        provider = configs[provider_name]
+
         try:
-            return _call_provider(base_url, api_key, model, messages, tools)
-        except Exception as e:
-            last_error = f"{provider_name}: {e}"
-            continue
+            return _call_provider(
+                provider=provider,
+                messages=messages,
+                tools=tools,
+            )
+        except LLMProviderError as error:
+            errors.append(str(error))
 
-    raise LLMProviderError(f"All LLM providers failed. Last error: {last_error}")
+    error_summary = " | ".join(errors)
+
+    raise LLMProviderError(
+        "All configured LLM providers failed. "
+        f"Details: {error_summary}"
+    )

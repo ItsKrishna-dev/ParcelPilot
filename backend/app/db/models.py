@@ -12,7 +12,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, relationship
 from pgvector.sqlalchemy import Vector
-
+from sqlalchemy import UniqueConstraint
 Base = declarative_base()
 
 
@@ -101,7 +101,79 @@ class SourceAuthorityRule(Base):
     effective_to = Column(DateTime, nullable=True)
     notes = Column(Text)
 
+class ContractRule(Base):
+    """
+    Structured representation of an agreement clause extracted from a signed
+    customer agreement.
 
+    This table prevents business logic from depending on hardcoded account IDs.
+    The account is identified through the agreement document's account_id, and
+    the actual rule values are extracted from document content.
+    """
+
+    __tablename__ = "contract_rules"
+
+    rule_id = Column(Integer, primary_key=True, autoincrement=True)
+
+    account_id = Column(
+        String,
+        ForeignKey("accounts.account_id"),
+        nullable=False,
+        index=True,
+    )
+
+    doc_id = Column(
+        String,
+        ForeignKey("documents.doc_id"),
+        nullable=False,
+        index=True,
+    )
+
+    clause_type = Column(
+        String,
+        nullable=False,
+        index=True,
+    )
+    # Supported values:
+    # cancellation_fee
+    # service_credit
+    # sla
+
+    rule_key = Column(String, nullable=False)
+    # Examples:
+    # cancellation_fee_waived
+    # cancellation_free_window_minutes
+    # cancellation_fee_inr
+    # service_credit_delay_threshold_hours
+    # service_credit_fixed_amount_inr
+    # service_credit_monthly_cap_inr
+    # sla_p1_minutes
+    # sla_p2_minutes
+    # sla_p3_minutes
+    # support_after_hours
+
+    value_number = Column(Float, nullable=True)
+    value_text = Column(Text, nullable=True)
+    value_boolean = Column(Boolean, nullable=True)
+
+    unit = Column(String, nullable=True)
+    source_text = Column(Text, nullable=False)
+
+    effective_from = Column(DateTime, nullable=True)
+    effective_to = Column(DateTime, nullable=True)
+
+    is_active = Column(Boolean, nullable=False, default=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id",
+            "doc_id",
+            "clause_type",
+            "rule_key",
+            name="uq_contract_rule",
+        ),
+    )
+    
 class Escalation(Base):
     __tablename__ = "escalations"
     escalation_id = Column(String, primary_key=True)

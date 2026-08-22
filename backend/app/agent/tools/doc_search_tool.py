@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from app.agent.schemas import DocSearchInput, DocSearchOutput, ToolResultStatus
 from app.retrieval.hybrid_search import hybrid_search
 
-
+MAX_RESULT_TEXT_CHARS = 1800
 def run_doc_search(db: Session, tool_input: DocSearchInput, account_id: str | None) -> DocSearchOutput:
     chunks = hybrid_search(
         db, query=tool_input.query, doc_types=tool_input.doc_types,
@@ -15,8 +15,13 @@ def run_doc_search(db: Session, tool_input: DocSearchInput, account_id: str | No
 
     results = [
         {
-            "doc_id": c.doc_id, "filename": c.filename, "status": c.doc_status,
-            "effective_date": c.effective_date, "page": c.page, "text": c.text, "score": c.score,
+            "doc_id": c.doc_id,
+            "filename": c.filename,
+            "status": c.doc_status,
+            "effective_date": c.effective_date,
+            "page": c.page,
+            "text": c.text[:MAX_RESULT_TEXT_CHARS],
+            "score": c.score,
         }
         for c in chunks
     ]
