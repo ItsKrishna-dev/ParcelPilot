@@ -103,6 +103,8 @@ def main():
                 db.add(Document(**d))
             for r in SOURCE_AUTHORITY_RULES:
                 db.add(SourceAuthorityRule(**r))
+            db.commit() # Commit parents first to satisfy contract_rules doc_id foreign key
+
             for cr in CONTRACT_RULES_SEED:
                 db.add(ContractRule(**cr))
             db.commit()
