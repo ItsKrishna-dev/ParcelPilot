@@ -2,14 +2,12 @@
 
 import re
 import string
-import time
-import numpy as np
 from enum import Enum
 from dataclasses import dataclass
 from typing import Optional
 
 from app.auth.mock_auth import Session as UserSession
-from app.retrieval.hybrid_search import _get_embedder
+from app.retrieval.hybrid_search import _try_load_embedder
 
 class IntentCategory(str, Enum):
     GREETING = "greeting"
@@ -63,8 +61,11 @@ def _init_prototypes():
     global _prototype_vectors
     if _prototype_vectors:
         return
+    embedder = _try_load_embedder()
+    if embedder is None:
+        return  # sentence-transformers not available — BM25-only mode
     try:
-        embedder = _get_embedder()
+        import numpy as np
         for cat, examples in PROTOTYPE_EXAMPLES.items():
             vecs = embedder.encode(examples)
             mean_vec = np.mean(vecs, axis=0)
@@ -73,7 +74,6 @@ def _init_prototypes():
                 mean_vec = mean_vec / norm
             _prototype_vectors[cat] = mean_vec
     except Exception:
-        # Fallback if sentence-transformers is not initialized
         pass
 
 def normalize_text(text: str) -> str:
@@ -130,37 +130,37 @@ def route_user_message(message: str) -> IntentRoute:
             reason="Matched obvious general help request.",
         )
 
-    # 3. Semantic local fallback
+    # 3. Semantic local fallback (only when sentence-transformers is available)
     try:
         _init_prototypes()
         if _prototype_vectors:
-            embedder = _get_embedder()
-            query_vec = embedder.encode([normalized])[0]
-            q_norm = np.linalg.norm(query_vec)
-            if q_norm > 0:
-                query_vec = query_vec / q_norm
+            import numpy as np
+            embedder = _try_load_embedder()
+            if embedder is not None:
+                query_vec = embedder.encode([normalized])[0]
+                q_norm = np.linalg.norm(query_vec)
+                if q_norm > 0:
+                    query_vec = query_vec / q_norm
 
-            scores = {}
-            for cat, proto_vec in _prototype_vectors.items():
-                sim = float(np.dot(query_vec, proto_vec))
-                scores[cat] = sim
+                scores = {}
+                for cat, proto_vec in _prototype_vectors.items():
+                    sim = float(np.dot(query_vec, proto_vec))
+                    scores[cat] = sim
 
-            sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-            top_cat, top_score = sorted_scores[0]
-            second_score = sorted_scores[1][1] if len(sorted_scores) > 1 else 0.0
+                sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+                top_cat, top_score = sorted_scores[0]
+                second_score = sorted_scores[1][1] if len(sorted_scores) > 1 else 0.0
 
-            # Conservative threshold check
-            margin = top_score - second_score
-            if (top_score >= 0.65 and margin >= 0.08) or (top_score >= 0.55 and margin >= 0.12):
-                return IntentRoute(
-                    category=top_cat,
-                    confidence=round(top_score, 2),
-                    method="semantic_local",
-                    should_bypass_agent=True,
-                    reason=f"Semantic prototype match score: {top_score:.2f}",
-                )
+                margin = top_score - second_score
+                if (top_score >= 0.65 and margin >= 0.08) or (top_score >= 0.55 and margin >= 0.12):
+                    return IntentRoute(
+                        category=top_cat,
+                        confidence=round(top_score, 2),
+                        method="semantic_local",
+                        should_bypass_agent=True,
+                        reason=f"Semantic prototype match score: {top_score:.2f}",
+                    )
     except Exception:
-        # Ignore semantic failures and fallback to main agent
         pass
 
     return IntentRoute(

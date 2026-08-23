@@ -4,7 +4,7 @@ Hybrid retrieval: BM25 (keyword) + pgvector cosine (semantic), merged with weigh
 Performance and reliability principles:
 1. Embed ONLY the query at search time (1 vector encode vs re-encoding entire corpus).
 2. Cache query vector encodings to ensure sub-10ms performance on repeated queries.
-3. Fall back gracefully to BM25 if embeddings are not populated or pgvector is unavailable.
+3. Fall back gracefully to BM25-only if sentence-transformers is unavailable (e.g. Render free tier).
 4. Hard-filter out DEPRECATED documents by default (e.g. 02_Support_Policy_v2).
 5. Deduplicate results strictly (one top chunk per document).
 6. Truncate chunk text to prevent context blowup under free-tier token limits.
@@ -25,29 +25,50 @@ from app.db.models import DocChunk, Document
 
 _embedder_lock = threading.Lock()
 _embedder_instance = None
+_embedder_available: Optional[bool] = None  # None = unchecked, True/False = checked
 
 
-def _get_embedder():
-    global _embedder_instance
-    if _embedder_instance is None:
-        with _embedder_lock:
-            if _embedder_instance is None:
-                import torch
-                torch.set_num_threads(1)
-                torch.set_grad_enabled(False)
-                from sentence_transformers import SentenceTransformer
-                _embedder_instance = SentenceTransformer(
-                    settings.embedding_model,
-                    device="cpu"
-                )
-                _embedder_instance.eval()
+def _try_load_embedder():
+    """
+    Attempt to load sentence-transformers. Returns the model or None.
+    If sentence-transformers is not installed (e.g. Render free tier),
+    returns None cleanly so BM25-only mode activates.
+    """
+    global _embedder_instance, _embedder_available
+    if _embedder_available is False:
+        return None
+    if _embedder_instance is not None:
+        return _embedder_instance
+    with _embedder_lock:
+        if _embedder_instance is not None:
+            return _embedder_instance
+        if _embedder_available is False:
+            return None
+        try:
+            import torch
+            torch.set_num_threads(1)
+            torch.set_grad_enabled(False)
+            from sentence_transformers import SentenceTransformer
+            _embedder_instance = SentenceTransformer(
+                settings.embedding_model,
+                device="cpu"
+            )
+            _embedder_instance.eval()
+            _embedder_available = True
+            print("[hybrid_search] sentence-transformers loaded — hybrid mode active")
+        except Exception as e:
+            _embedder_available = False
+            _embedder_instance = None
+            print(f"[hybrid_search] sentence-transformers unavailable ({e}) — BM25-only mode")
     return _embedder_instance
 
 
 @functools.lru_cache(maxsize=256)
 def _embed_query_cached(query: str) -> Optional[tuple]:
+    embedder = _try_load_embedder()
+    if embedder is None:
+        return None
     try:
-        embedder = _get_embedder()
         vec = embedder.encode([query])[0]
         vec_list = vec.tolist() if hasattr(vec, "tolist") else list(vec)
         return tuple(vec_list)
@@ -104,6 +125,7 @@ def hybrid_search(
 ) -> List[RetrievedChunk]:
     """
     Fast hybrid search combining pgvector cosine similarity and BM25 scoring.
+    Falls back cleanly to BM25-only when sentence-transformers is not available.
     """
     request_started = time.perf_counter()
     effective_top_k = top_k if top_k is not None else settings.retrieval_top_k
@@ -146,7 +168,7 @@ def hybrid_search(
     if not rows:
         return []
 
-    # 2. BM25 keyword scoring
+    # 2. BM25 keyword scoring (always available — no ML dependency)
     corpus = [r[0].text for r in rows]
     tokenized_corpus = [c.lower().split() for c in corpus]
     bm25 = BM25Okapi(tokenized_corpus)
@@ -155,7 +177,9 @@ def hybrid_search(
     max_bm25 = max(bm25_raw_scores) if len(bm25_raw_scores) > 0 and max(bm25_raw_scores) > 0 else 1.0
     bm25_norm_scores = [float(s) / max_bm25 for s in bm25_raw_scores]
 
-    # 3. Fast semantic scoring via query embedding only
+    # 3. Semantic scoring — use pre-stored chunk embeddings from Neon
+    #    If sentence-transformers is available, encode the query locally.
+    #    If not (Render free tier), fall back to BM25-only (sem_scores all 0.0).
     sem_scores = [0.0] * len(rows)
     query_vec = _embed_query(clean_query)
 
@@ -176,9 +200,10 @@ def hybrid_search(
             sem_scores = [0.0] * len(rows)
 
     # 4. Score Fusion & Candidate Generation
+    # In BM25-only mode (sem_scores all 0), fused == bm25_norm, which is still effective.
     candidates: List[RetrievedChunk] = []
     for (chunk, doc), bm25_s, sem_s in zip(rows, bm25_norm_scores, sem_scores):
-        fused = 0.5 * bm25_s + 0.5 * sem_s
+        fused = 0.5 * bm25_s + 0.5 * sem_s if any(s > 0 for s in sem_scores) else bm25_s
         truncated_text = chunk.text[:max_chars] if chunk.text else ""
         candidates.append(
             RetrievedChunk(
@@ -198,10 +223,12 @@ def hybrid_search(
     # 5. Strict Document Deduplication
     final_results = _deduplicate_by_document(candidates, max_results=effective_top_k)
 
+    mode = "hybrid" if query_vec is not None else "bm25-only"
     print(
         "[hybrid_search]",
         {
             "query": query,
+            "mode": mode,
             "total_ms": round((time.perf_counter() - request_started) * 1000, 2),
             "rows_loaded": len(rows),
             "top_k": effective_top_k,
