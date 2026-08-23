@@ -1,103 +1,432 @@
 # ParcelPilot AI Support Agent -- Architecture Note
 
-## 1. Agent Design & State Machine
-The agent implements a lightweight, hand-rolled state machine (`app/agent/orchestrator.py`):
-`plan -> tool_call -> observe -> calculation_guard -> confidence_check -> respond | escalate | confirm`.
+## 1. Purpose and scope
 
-Heavyweight agent frameworks were deliberately avoided to maintain full auditability and unit-testability of all state transitions. Every decision path, error state, and confidence calculation is transparent and testable without framework magic.
+ParcelPilot is an AI support and policy-verification system built for the CalQuity AI Engineer assessment. It assists customers and authorised ParcelPilot support/operations staff with shipment cancellations, service credits, support SLAs, order/ticket investigation, known product issues, and escalation preparation.
 
-The LLM is invoked through an OpenAI-compatible adapter (`app/agent/llm_client.py`) with Groq (`openai/gpt-oss-20b`) as the primary provider and NVIDIA NIM as an automatic fallback. Free-tier token and rate constraints are managed via concise prompt engineering, bounded 429 retry backoff, and compact tool responses.
+The system is intentionally designed as a **controlled decision-support agent**, not an unrestricted autonomous agent. The LLM handles natural-language understanding, planning, tool selection, and answer composition. It does not become the authority for fees, credits, SLA deadlines, permissions, or state-changing actions.
 
-## 2. Deterministic Calculation Enforcement
-To guarantee financial and policy correctness, the LLM is **never allowed to perform business arithmetic or policy evaluations in prose**.
+The supplied assessment pack is the baseline information source:
 
-- **Detection (`app/domain/calculation_requirements.py`):** Automatically detects if an inquiry concerns cancellation eligibility/fees (`cancellation_calc`), failed-pickup service credits (`service_credit_calc`), or SLA response/breach targets (`sla_calc`).
-- **Orchestrator Guardrail (`app/agent/orchestrator.py`):** If the LLM attempts to finalize a response before calling the detected calculation tool, the orchestrator intercepts the turn, re-prompts the model with an explicit directive, and ensures the calculation result drives the final output.
-- **Pure Python Domain Engines (`app/domain/`):** Pure deterministic arithmetic and edge case logic for:
-  - `cancellation.py`: Free DRAFT, 30m BOOKED free window vs INR 250 fee, agreement waivers, PICKED_UP return-to-origin workflows, DELIVERED restrictions.
-  - `service_credit.py`: 2h (or agreement-specified 4h) delay thresholds, carrier fault verification, fixed/capped amounts, manager approval thresholds (>INR 1,000). Handles `pickup_actual_at is None` for still-BOOKED shipments using the fixed logical snapshot time.
-  - `sla.py`: Target lookup across Enterprise/Growth/Standard tiers and custom agreement overrides, elapsed calculation against ticket creation.
+- Six PDF documents covering current/deprecated policies, SOPs, product operations, and customer agreements.
+- `ParcelPilot_Assessment_Data.xlsx` containing accounts, orders, tickets, and the dataset snapshot time.
 
-## 3. High-Performance Retrieval Architecture
-Retrieval latency was optimized from ~6 seconds down to **under 300ms** through five design improvements:
-1. **Query-Only Embedding:** Rather than re-encoding the entire document corpus on every query, `SentenceTransformer` runs once as a thread-safe singleton, encoding solely the query vector (~10ms).
-2. **Database Vector Similarity:** Chunks are pre-embedded at ingestion time and stored in `doc_chunks.embedding` (`pgvector`). Semantic matching runs via cosine distance.
-3. **BM25 Hybrid Fusion:** In-memory BM25 Okapi scores are combined with semantic similarity using weighted rank fusion (`0.5 * bm25_norm + 0.5 * cosine_sim`).
-4. **Document-Type Routing & Truncation:** Document types (`support_policy`, `sop`, `product_ops`, `agreement`) are filtered per tool call, and chunk text is truncated to `RETRIEVAL_MAX_CHUNK_CHARS` (1800) to minimize prompt token overhead.
-5. **Deduplication:** Overlapping chunks sharing identical document ID, page, and text prefixes are deduplicated before returning.
+The architecture supports future controlled expansion, but uploaded or newly added documents must not automatically become authoritative without validation, classification, and approval.
 
-## 4. ContractRule Data-Driven Overrides
-To eliminate hardcoded account IDs in business logic:
-- `ContractRule` records are stored in PostgreSQL (`app/db/models.py`) and extracted deterministically from agreement PDFs (`app/ingestion/contract_rules.py`).
-- Supported rule types:
-  - `cancellation_fee_waived`, `cancellation_free_window_minutes`, `cancellation_fee_inr`
-  - `service_credit_delay_threshold_hours`, `service_credit_fixed_amount_inr`, `service_credit_monthly_cap_inr`
-  - `sla_p1_minutes`, `sla_p2_minutes`, `sla_p3_minutes`
-- `resolve_contract_overrides()` (`app/domain/contract_rules.py`) converts database rows into typed overrides, ensuring domain logic remains completely account-agnostic.
+## 2. High-level architecture
 
-## 5. Source Reliability and Authority Precedence
-Precedence rules are encoded as relational data in `source_authority_rules` (`app/db/models.py`, resolved by `app/retrieval/source_authority.py`):
-1. **Signed Customer Agreement** (Highest authority for account)
-2. **Current Cancellation & Service Credit SOP**
-3. **Current Support Policy**
-4. **Product Operations Guide & Known Issues**
-5. **Deprecated Documents** (Excluded by default; marked with explicit warning if historical policy requested)
-6. **Historical Ticket Resolutions** (Treated as unverified context, never as policy authority)
+```text
++---------------------------+
+| React + TypeScript UI     |
+| Customer / Agent / Manager|
++-------------+-------------+
+              |
+              | Authorization: Bearer <mock session>
+              v
++---------------------------+
+| FastAPI API layer         |
+| validation / auth / CORS  |
++-------------+-------------+
+              |
+              v
++---------------------------+
+| Conversation Router       |
+| greeting / help / support |
++------+------+-------------+
+       |      |
+       |      +------------------------------+
+       |                                     |
+       v                                     v
++-------------+                    +----------------------+
+| Local safe  |                    | Agent Orchestrator    |
+| response    |                    | bounded tool loop    |
++-------------+                    +---+--------+---------+
+                                      |        |         |
+                                      v        v         v
+                              +-----------+ +--------+ +-----------+
+                              | doc_search| | lookup | | action    |
+                              | retrieval | | data + | | engine    |
+                              |           | | calc   | | confirm   |
+                              +-----+-----+ +---+----+ +-----+-----+
+                                    |           |            |
+                                    +-----------+------------+
+                                                |
+                                                v
+                              +-------------------------------+
+                              | PostgreSQL + pgvector         |
+                              | accounts, orders, tickets    |
+                              | documents, chunks            |
+                              | authority rules, contracts   |
+                              | actions, audit log           |
+                              +-------------------------------+
+                                                ^
+                                                |
+                              +-------------------------------+
+                              | PDF/XLSX ingestion pipeline   |
+                              | extraction / chunking / embed |
+                              +-------------------------------+
 
-## 6. Access Control & Row-Level Security (RLS)
-Access control is enforced in two independent layers:
-1. **Application Repository Layer (`app/db/repository.py`):** Every query filters by `session.account_id` when `role == "customer"`.
-2. **PostgreSQL Native RLS (`app/db/rls_policies.sql`):** Uses transaction-local session settings `parcelpilot.user_role` and `parcelpilot.account_id` via `set_config(..., true)`. Even if an application bug omitted a where clause, the database engine enforces tenant isolation.
+LLM: Groq primary -> NVIDIA NIM fallback
+Embeddings: local sentence-transformers, cached/stored
+```
 
-## 7. State-Changing Action Workflow
-State-changing actions (`create_escalation`, `update_ticket_status`, `create_follow_up_task`) follow a structural **two-phase commit**:
-- `confirmed=false`: Creates a draft and returns a TTL-bound `pending_action_id` without executing or modifying core entities.
-- `confirmed=true`: Executes only when the user explicitly confirms with the exact `pending_action_id`. Consumes the action once (idempotency guard) and records the event in `audit_log`.
+## 3. Request lifecycle
 
-## 8. Error Handling & API Contract
-The API guarantees that expected agent failures (provider rate limits, missing records, invalid tool arguments, access denials) **never produce HTTP 500 crashes**:
-- Every response conforms to `ChatResponse`:
-  ```json
-  {
-    "answer": "string",
-    "confidence": 0.95,
-    "escalated": false,
-    "tool_trace": [],
-    "evidence": []
-  }
-  ```
-- All tool latencies (`latency_ms`) are recorded in the trace.
-## 9. Stage 2 Knowledge Administration & Document Governance
-Stage 2 introduces a secure, manager-governed document ingestion workflow (`app/api/admin_documents.py`, `app/ingestion/doc_processor.py`):
+A normal support request follows this lifecycle:
 
-1. **Upload Lifecycle & State Machine:**
-   `Manager Upload PDF -> Validation -> PROCESSING -> Text extraction, chunking, embedding -> Proposed metadata -> PENDING_REVIEW -> Manager Review -> ACTIVATE / REJECT / DEPRECATE / SUPERSEDE -> Only ACTIVE documents influence answers`
-2. **Document State Machine:**
-   `DRAFT`, `PROCESSING`, `PENDING_REVIEW`, `ACTIVE`, `REJECTED`, `SUPERSEDED`, `DEPRECATED`, `FAILED`.
-   - Only `ACTIVE` (or seeded `CURRENT`) documents are queried in `hybrid_search` for normal user queries.
-   - `PENDING_REVIEW`, `PROCESSING`, `DRAFT`, `REJECTED`, `SUPERSEDED`, and `FAILED` documents are strictly excluded from retrieval.
-   - `DEPRECATED` documents are excluded unless `allow_deprecated=True` is explicitly specified for historical inquiries.
-3. **File Security & Local Storage:**
-   - Saved to `backend/storage/documents/doc_<uuid>.pdf` (excluded from git).
-   - Validation: PDF header magic bytes (`%PDF-`), 10MB max size, sanitized filenames (preventing path traversal).
-   - Checksum: SHA-256 hash calculated upon upload; duplicate active uploads are rejected.
-   - Content handling: PDF text extracted via `pypdf`, chunked, embedded locally. Content treated as untrusted text (never executed).
-4. **Contract Rule Extraction for Agreement Uploads:**
-   - Uploaded customer agreements (`document_type == "agreement"`) run structured contract rule extraction (`app/ingestion/contract_rules.py`) upon activation, dynamically inserting `ContractRule` records into PostgreSQL without modifying Python code.
-5. **Auditing & Governance:**
-   - Every lifecycle event (`document_uploaded`, `document_ingestion_started`, `document_ingestion_succeeded`, `document_ingestion_failed`, `document_activated`, `document_rejected`, `document_deprecated`, `document_superseded`, `document_reprocessed`) records an entry in `audit_log`.
+```text
+HTTP request
+  -> authenticate mock session
+  -> validate message
+  -> classify conversational intent
+  -> route obvious greeting/help locally, or continue
+  -> identify required calculation and document types
+  -> ask LLM for a tool call
+  -> validate tool arguments with Pydantic
+  -> inject session scope into tool execution
+  -> execute retrieval / structured lookup / deterministic calculation
+  -> append compact tool result to model context
+  -> repeat within bounded iteration limit
+  -> validate final answer state
+  -> answer, request verification, escalate, or prepare action confirmation
+```
 
-## 10. Conversational Pre-Agent Intent Router
-To prevent simple conversational statements (e.g. "hello", "thanks") from routing through the expensive LLM RAG/tool-calling workflow and producing false escalations, a hybrid intent routing layer is integrated before the orchestrator's `run_turn()` call:
+The orchestration loop is bounded by a configurable maximum number of tool iterations. A budget exhaustion is represented as `workflow_incomplete`, not silently presented as a verified answer.
 
-1. **Pre-Agent Intent Router flow:**
-   - **Normalization:** Cleans text by lowercasing and stripping punctuation.
-   - **Deterministic Fast Path:** Inspects high-precision greeting, acknowledgement, and help patterns. Obvious greetings bypass the RAG agent instantly (0ms latency, zero token consumption).
-   - **Domain-Content Safety Override:** Checks for order/ticket/account/KI IDs or domain keywords (SLA, cancellation, credit, stuck, status, etc.). Any matching signal immediately forces routing to the main RAG agent.
-   - **Semantic Fallback:** Ambiguous short inputs run semantic comparison against prototype embeddings (greeting, acknowledgement, help) using the cached local `SentenceTransformer` model.
-   - **Conservative Thresholding:** Requires a similarity score of `>= 0.65` and a score margin of `>= 0.08` over the second-best category. If criteria are unmet, defaults to `UNKNOWN` (routed to the main agent).
-2. **conversational Response Contract:**
-   - Bypassed conversational messages return a response structure with `answer_state="conversational"`, `confidence=null`, `workflow_complete=true`, and empty `tool_trace` and `evidence`.
-   - General help queries return role-aware capability responses (customized for Customer, Support Agent, and Manager roles).
-3. **Frontend Trust-State Synchronization:**
-   - When `answer_state === "conversational"`, the UI displays a `Conversational` badge, renders the answer text, and suppresses all policy confidence values, severity tags, escalation warning headers, decision cards, evidence lists, and tool traces.
+## 4. Conversational routing
+
+Not every input is a support request. The system contains a pre-agent intent router (`agent/intent_router.py`) that prevents trivial conversation from consuming retrieval and LLM resources.
+
+The router uses a layered approach:
+
+1. **Deterministic fast path** for unambiguous, low-risk inputs (`hello`, `thanks`, `good morning`) matched by anchored patterns, not a giant keyword list.
+2. **Domain-content override** -- regex/entity detection for order IDs (`ORD-\\d+`), ticket IDs (`TKT-\\d+`), account IDs, known-issue IDs (`KI-\\d+`), and cancellation/credit/SLA/action vocabulary. Any domain signal forces routing to the full agent regardless of a leading greeting (`Hello, can I cancel ORD-1001?` -> full agent).
+3. **Conservative default** -- ambiguous or unrecognized messages route to the full agent rather than silently receiving a canned response. Uncertainty resolves toward doing real work, never guessing that the message is small talk.
+
+A local conversational response has:
+
+```json
+{
+  "answer_state": "conversational",
+  "confidence": null,
+  "escalated": false,
+  "tool_trace": [],
+  "evidence": [],
+  "workflow_complete": true
+}
+```
+
+This prevents a harmless `hello` from being labelled `Needs Verification` or `Escalation Required`, while preserving the full workflow for meaningful requests.
+
+## 5. Agent and tool design
+
+### 5.1 Document retrieval tool
+
+`doc_search` searches current policies, SOPs, product operations documentation, and account-specific agreements.
+
+Its safety and performance controls include:
+
+- Exclude deprecated documents by default.
+- Apply account scope to agreement documents.
+- Route document types according to intent:
+  - cancellation -> SOP + agreement
+  - service credit -> SOP + agreement
+  - SLA -> support policy + agreement
+  - product status/webhook/bulk upload -> product operations
+- Return compact metadata: document ID, filename, status, date, page, score, and truncated text.
+- Deduplicate overlapping chunks.
+- Cache retrieval structures and avoid re-embedding the full corpus on each request.
+- Preserve provenance so the UI can explain which source influenced the response.
+
+### 5.2 Structured lookup and deterministic calculation tool
+
+`lookup_structured` handles accounts, orders, tickets, and deterministic calculations.
+
+The calculation entities are:
+
+- `cancellation_calc`
+- `service_credit_calc`
+- `sla_calc`
+
+The LLM must not calculate business outcomes itself. The tool layer loads the relevant records, retrieves structured contract overrides, resolves authority, and calls deterministic domain functions.
+
+Examples:
+
+```text
+ORD-1001 -> cancellation_calc -> ALLOWED_NO_FEE -> INR 0
+ORD-2001 -> cancellation_calc -> ALLOWED_WITH_FEE -> INR 250
+ORD-2002 -> service_credit_calc -> ELIGIBLE -> INR 300
+```
+
+The tool rejects unsupported filters instead of silently ignoring them. This prevents a customer query such as `account_name=LumenWorks` from being silently converted into a query over the current session's records.
+
+### 5.3 State-changing action tool
+
+`action_engine` supports mocked actions such as:
+
+- Create escalation.
+- Update ticket status.
+- Create follow-up task.
+
+Actions follow a two-phase process:
+
+```text
+prepare draft
+  -> return pending_action_id
+  -> user explicitly confirms
+  -> verify exact pending action, actor, scope, expiry, and single-use status
+  -> execute once
+  -> write audit log
+```
+
+The first call with `confirmed=false` does not mutate business state. Replayed pending IDs are rejected to provide idempotency during retries or double-clicks.
+
+## 6. Deterministic domain logic
+
+### Cancellation
+
+The cancellation engine handles:
+
+- DRAFT: no fee.
+- BOOKED before pickup: default 30-minute free window, then INR 250 unless contract overrides.
+- PICKED_UP: cannot cancel; use return-to-origin.
+- DELIVERED: cannot cancel.
+- Missing timestamps or unknown statuses: verification required.
+
+### Service credits
+
+The service-credit engine handles:
+
+- Delay relative to the scheduled pickup-window end.
+- Carrier-fault and customer-fault conditions.
+- Default lower-of-INR-500-or-10%-of-fee rule.
+- Contract-specific threshold, fixed amount, and cap overrides.
+- Manager approval above the configured INR threshold.
+- Missing fault/timing information as `NEEDS_VERIFICATION`.
+
+For a still-BOOKED order with no actual pickup timestamp, the fixed dataset snapshot is used as the reference time when the order record establishes that pickup has not occurred. This correctly evaluates `ORD-2002` as 4.5 hours late at the assessment snapshot.
+
+### SLA
+
+SLA calculation selects contract targets when structured contract rules contain them; otherwise it falls back to the current Support Policy by plan and severity. The current assessment implementation uses simplified minute conversions for business-hour/day targets, documented as a limitation.
+
+## 7. Contract rules and source authority
+
+Agreement clauses are extracted into `contract_rules` rather than encoded as account-ID conditionals.
+
+Supported rule types include:
+
+- `cancellation_fee_waived`
+- `cancellation_free_window_minutes`
+- `cancellation_fee_inr`
+- `service_credit_delay_threshold_hours`
+- `service_credit_fixed_amount_inr`
+- `service_credit_monthly_cap_inr`
+- `sla_p1_minutes`
+- `sla_p2_minutes`
+- `sla_p3_minutes`
+
+Every extracted rule retains:
+
+- account ID
+- source document ID
+- clause type
+- rule key
+- value
+- source text
+- effective date
+
+The source precedence model is:
+
+```text
+signed customer agreement
+  > current Cancellation & Service Credit SOP
+  > current Support Policy
+  > current Product Operations Guide
+  > deprecated documents for explicit history only
+  > historical ticket resolutions as unverified context
+```
+
+This explains why:
+
+- Northstar's signed agreement waives the late cancellation fee.
+- LumenWorks receives a fixed INR 300 credit after its four-hour threshold.
+- Beacon Retail falls back to the standard SOP.
+- Axis Labs falls back to the standard Enterprise policy.
+- TKT-450 and TKT-451 cannot override current policy or contract truth.
+
+## 8. Document ingestion
+
+The ingestion pipeline reads the original PDFs directly:
+
+```text
+PDF
+  -> page text extraction
+  -> normalization
+  -> overlapping chunks
+  -> local embedding generation
+  -> documents/doc_chunks persistence
+  -> optional contract-rule extraction
+```
+
+The workbook pipeline reads:
+
+```text
+README -> snapshot time and notes
+accounts -> accounts table
+orders -> orders table
+tickets -> tickets table
+```
+
+Account reloads use upsert behavior so contract documents are not broken by deleting referenced account rows. Dependent workbook records are replaced in foreign-key-safe order.
+
+## 9. Retrieval performance
+
+The first implementation re-embedded every document chunk for every request, causing several-second retrieval latency. The optimized implementation avoids that pattern.
+
+Performance controls:
+
+- Build/cache BM25 structures.
+- Load local embedding model once when semantic retrieval is enabled.
+- Embed only the query, not the complete corpus, during a request.
+- Reuse stored vectors for future pgvector SQL similarity search.
+- Limit top-k results.
+- Deduplicate chunks.
+- Truncate long excerpts.
+- Route to the narrowest relevant document types.
+- Keep structured calculations independent from retrieval.
+
+Observed repeated retrieval performance for the small assessment corpus reached low-millisecond latency after cache warm-up, while the first call may still include one-time initialization overhead.
+
+## 10. Access control and privacy
+
+The system uses two layers:
+
+### Application layer
+
+`db/repository.py` enforces session-level account scope before data reaches the LLM. Customer sessions can only access their own account. Unsupported filters are rejected.
+
+### PostgreSQL layer
+
+PostgreSQL RLS policies use transaction-local settings:
+
+```text
+parcelpilot.user_role
+parcelpilot.account_id
+```
+
+The names are deliberately namespaced and avoid PostgreSQL reserved identifiers such as `current_role`. The application sets these values with transaction-local `set_config()` calls.
+
+Customer data from another account must never enter:
+
+- tool output
+- model context
+- evidence response
+- frontend response
+
+Internal support-agent and manager sessions have broader access through the existing mock role model. Authentication remains mocked for the assessment and is explicitly documented as a production limitation.
+
+## 11. Confidence and answer states
+
+The system separates:
+
+| Field | Meaning |
+|---|---|
+| Confidence | Strength of support for the answer |
+| Operational severity | Seriousness of the underlying issue |
+| Verification | Whether additional confirmation is advisable/required |
+| Escalation | Whether a human must intervene |
+| Workflow completion | Whether the intended tool workflow completed |
+| Answer state | Stable overall response category |
+
+Important answer states include:
+
+- `conversational`
+- `verified`
+- `needs_verification`
+- `workflow_incomplete`
+- `access_denied`
+- `provider_unavailable`
+- `out_of_scope`
+- `error`
+
+Decision cards are rendered only when the response is verified and the workflow is complete. If a tool budget is exhausted after evidence was collected, the UI shows evidence as discovered but not confirmed—not as a verified decision.
+
+## 12. LLM provider strategy
+
+Groq is the preferred provider because it offers fast OpenAI-compatible inference and fits the free-tools constraint. The default model is configurable through `.env` and currently uses `openai/gpt-oss-20b` to reduce token pressure.
+
+NVIDIA NIM is supported as an optional fallback through the same adapter interface. Provider aliases such as `nvidia`, `nvidia_nim`, and `nim` normalize to a canonical provider name.
+
+Provider failures are handled explicitly:
+
+- 401: configuration/authentication error.
+- 404: invalid/unavailable model.
+- 429: bounded rate-limit handling.
+- timeout/network failure: provider failure.
+- both providers unavailable: controlled escalation response.
+
+API keys are never included in logs or responses.
+
+## 13. Frontend architecture
+
+The React + TypeScript + Vite frontend is organized into:
+
+```text
+src/api/          typed API clients
+src/components/   reusable UI components
+src/features/     feature-level screens and state
+src/lib/          trust/error/formatting helpers
+src/types/        shared response and state types
+```
+
+The dashboard supports customer, support-agent, and manager contexts. It displays:
+
+- Role/session context.
+- Chat responses.
+- Confidence and answer state.
+- Decision cards.
+- Evidence and tool trace.
+- Loading/error states.
+- Proactive insights.
+- Confirmation cards for pending actions.
+
+The initial empty chat state and obvious conversational responses do not call the LLM. Suggested support prompts call the real API.
+
+## 14. Major technical trade-offs
+
+| Decision | Benefit | Trade-off |
+|---|---|---|
+| Groq primary | Fast, free-tier-compatible inference | TPM limits require compact context and bounded output |
+| NVIDIA NIM adapter | Optional free/provider fallback | Requires separate credentials and model availability |
+| Local embeddings | No paid embedding API | Model startup and local resource usage |
+| BM25/cache-first retrieval | Very fast for small corpus | Semantic recall needs SQL-side pgvector at larger scale |
+| PostgreSQL + pgvector | Structured storage, vector readiness, RLS | More setup than SQLite |
+| Hand-rolled orchestrator | Transparent state machine and easy testing | More orchestration code to maintain |
+| Deterministic calculators | Correct, reproducible decisions | Every rule variant must be explicitly modeled |
+| ContractRule extraction | No account-ID business logic, auditable provenance | Extraction patterns need review for new agreement formats |
+| Mock authentication | Fast assessment implementation | Not production security |
+| Two-phase actions | Prevents accidental and duplicate writes | Requires an extra confirmation step |
+| Local intent fast path | Saves latency/tokens for obvious conversation | Ambiguous messages need conservative routing |
+
+## 15. Current limitations and next steps
+
+Known limitations:
+
+- Authentication is mocked.
+- SLA business-calendar and holiday handling is simplified.
+- Agreement extraction is pattern-based for the supplied documents.
+- SQL-side pgvector similarity search is the next retrieval-scale improvement.
+- Chat is turn-based rather than token-streamed.
+- Carrier status is based on the supplied snapshot rather than live integrations.
+- The action engine is mocked locally for the assessment.
+
+Next production steps:
+
+1. Replace mock authentication with OIDC/JWT and tenant claims.
+2. Add manager-governed document administration with review/activation states.
+3. Add SQL-side pgvector retrieval and retrieval evaluation metrics.
+4. Add real business calendars and time zones.
+5. Integrate carrier webhooks and ticketing systems.
+6. Add continuous golden-set evaluation and observability.
+7. Add verified human-resolution feedback rather than trusting raw historical tickets.
