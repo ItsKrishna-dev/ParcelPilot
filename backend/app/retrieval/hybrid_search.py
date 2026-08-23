@@ -32,8 +32,15 @@ def _get_embedder():
     if _embedder_instance is None:
         with _embedder_lock:
             if _embedder_instance is None:
+                import torch
+                torch.set_num_threads(1)
+                torch.set_grad_enabled(False)
                 from sentence_transformers import SentenceTransformer
-                _embedder_instance = SentenceTransformer(settings.embedding_model)
+                _embedder_instance = SentenceTransformer(
+                    settings.embedding_model,
+                    device="cpu"
+                )
+                _embedder_instance.eval()
     return _embedder_instance
 
 

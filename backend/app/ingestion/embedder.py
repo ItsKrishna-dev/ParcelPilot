@@ -6,9 +6,13 @@ _model = None
 def _get_model():
     global _model
     if _model is None:
+        import torch
+        torch.set_num_threads(1)
+        torch.set_grad_enabled(False)
         from sentence_transformers import SentenceTransformer
         from app.config import settings
-        _model = SentenceTransformer(settings.embedding_model)
+        _model = SentenceTransformer(settings.embedding_model, device="cpu")
+        _model.eval()
     return _model
 
 
