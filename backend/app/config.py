@@ -23,7 +23,16 @@ class Settings(BaseSettings):
             "@localhost:5433/parcelpilot"
         )
     )
-    
+
+    # Deployment environment
+    environment: str = Field(default="development")  # production | development
+
+    # CORS — comma-separated list of allowed origins.
+    # Add your Vercel URL here (e.g. https://your-app.vercel.app) in production.
+    cors_origins: str = Field(
+        default="http://localhost:5173,http://127.0.0.1:5173"
+    )
+
     # LLM Provider Configuration
     llm_primary_provider: str = Field(default="groq")
     llm_fallback_provider: str = Field(default="nvidia")

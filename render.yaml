@@ -1,0 +1,29 @@
+# Render deployment configuration for ParcelPilot backend
+# https://render.com/docs/render-yaml-spec
+#
+# This file configures the web service only.
+# The Neon PostgreSQL database is externally hosted — no Render DB service is created here.
+#
+# Required environment variables (set in Render dashboard, NOT here):
+#   DATABASE_URL    — Your Neon connection string (with sslmode=require&channel_binding=require)
+#   GROQ_API_KEY    — Your Groq API key
+#   APP_SECRET_KEY  — Random secret for session signing
+#   CORS_ORIGINS    — Comma-separated list of allowed frontend origins
+#                     e.g. https://your-app.vercel.app,http://localhost:5173
+#
+# Optional (have safe defaults in config.py):
+#   NVIDIA_NIM_API_KEY, GROQ_MODEL, ENVIRONMENT, etc.
+
+services:
+  - type: web
+    name: parcelpilot-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: PYTHON_VERSION
+        value: "3.11"
