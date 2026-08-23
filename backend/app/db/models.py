@@ -73,10 +73,28 @@ class Document(Base):
     __tablename__ = "documents"
     doc_id = Column(String, primary_key=True)
     filename = Column(String, nullable=False)
-    doc_type = Column(String, nullable=False)     # support_policy | sop | product_ops | agreement
-    status = Column(String, nullable=False)        # CURRENT | DEPRECATED
+    original_filename = Column(String, nullable=True)
+    storage_path = Column(String, nullable=True)
+    title = Column(String, nullable=True)
+    doc_type = Column(String, nullable=False)     # support_policy | sop | product_ops | agreement | internal_note
+    status = Column(String, nullable=False)        # CURRENT | DRAFT | PROCESSING | PENDING_REVIEW | ACTIVE | REJECTED | SUPERSEDED | DEPRECATED | FAILED
+    visibility = Column(String, default="internal_only", nullable=False)  # customer_visible | internal_only
     effective_date = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
     account_id = Column(String, ForeignKey("accounts.account_id"), nullable=True)  # set for contracts
+    authority_rank = Column(Integer, nullable=True)
+    supersedes_doc_id = Column(String, ForeignKey("documents.doc_id"), nullable=True)
+    superseded_by_doc_id = Column(String, ForeignKey("documents.doc_id"), nullable=True)
+    checksum_sha256 = Column(String, nullable=True, index=True)
+    uploaded_by = Column(String, nullable=True)
+    uploaded_at = Column(DateTime, nullable=True)
+    reviewed_by = Column(String, nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    activated_by = Column(String, nullable=True)
+    activated_at = Column(DateTime, nullable=True)
+    ingestion_error = Column(Text, nullable=True)
+    is_user_uploaded = Column(Boolean, default=False, nullable=False)
+    source_origin = Column(String, default="assessment_pack", nullable=False)
     raw_text = Column(Text)
 
 

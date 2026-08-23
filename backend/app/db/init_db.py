@@ -17,15 +17,53 @@ def _dt(value):
     return datetime.fromisoformat(value) if value else None
 
 
+def _apply_document_column_migrations():
+    new_cols = [
+        ("original_filename", "VARCHAR"),
+        ("storage_path", "VARCHAR"),
+        ("title", "VARCHAR"),
+        ("visibility", "VARCHAR DEFAULT 'internal_only'"),
+        ("expires_at", "TIMESTAMP"),
+        ("authority_rank", "INTEGER"),
+        ("supersedes_doc_id", "VARCHAR"),
+        ("superseded_by_doc_id", "VARCHAR"),
+        ("checksum_sha256", "VARCHAR"),
+        ("uploaded_by", "VARCHAR"),
+        ("uploaded_at", "TIMESTAMP"),
+        ("reviewed_by", "VARCHAR"),
+        ("reviewed_at", "TIMESTAMP"),
+        ("activated_by", "VARCHAR"),
+        ("activated_at", "TIMESTAMP"),
+        ("ingestion_error", "TEXT"),
+        ("is_user_uploaded", "BOOLEAN DEFAULT FALSE"),
+        ("source_origin", "VARCHAR DEFAULT 'assessment_pack'"),
+    ]
+
+    with engine.begin() as conn:
+        for col_name, col_type in new_cols:
+            try:
+                conn.execute(
+                    text(
+                        f"ALTER TABLE documents ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
+                    )
+                )
+            except Exception as e:
+                # Fallback for SQLite or already existing columns
+                pass
+
+
 def main():
     with engine.connect() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         conn.commit()
 
     Base.metadata.create_all(engine)
+    _apply_document_column_migrations()
 
     with engine.begin() as conn:
-        with open("app/db/rls_policies.sql") as file:
+        from pathlib import Path
+        rls_path = Path(__file__).resolve().parent / "rls_policies.sql"
+        with open(rls_path) as file:
             sql = file.read()
 
         statements = [
@@ -41,6 +79,9 @@ def main():
 
     db = SessionLocal()
     try:
+        from app.db.models import ContractRule
+        from app.db.seed_data import CONTRACT_RULES_SEED
+
         if db.query(Account).count() == 0:
             for a in ACCOUNTS:
                 db.add(Account(**a))
@@ -62,10 +103,17 @@ def main():
                 db.add(Document(**d))
             for r in SOURCE_AUTHORITY_RULES:
                 db.add(SourceAuthorityRule(**r))
+            for cr in CONTRACT_RULES_SEED:
+                db.add(ContractRule(**cr))
             db.commit()
-            print("[init_db] Seeded accounts, orders, tickets, documents, authority rules.")
+            print("[init_db] Seeded accounts, orders, tickets, documents, authority rules, contract rules.")
         else:
-            print("[init_db] Accounts already present -- skipping seed.")
+            if db.query(ContractRule).count() == 0:
+                for cr in CONTRACT_RULES_SEED:
+                    db.add(ContractRule(**cr))
+                db.commit()
+                print("[init_db] Seeded missing contract rules.")
+            print("[init_db] Accounts already present -- skipping base seed.")
     finally:
         db.close()
 

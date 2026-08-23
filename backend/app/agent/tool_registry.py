@@ -10,13 +10,13 @@ TOOLS = [
         "function": {
             "name": "doc_search",
             "description": (
-                "Search ParcelPilot source documents. For cancellation or service-credit "
-                "questions, search the SOP and the relevant customer agreement. For SLA "
-                "questions, search the support policy and relevant customer agreement. "
-                "For product-status or bug questions, search product_ops. Prefer the "
-                "smallest relevant doc_types list. Deprecated documents are excluded by "
-                "default and may only be included when the user explicitly asks about "
-                "historical policy."
+                "Search ParcelPilot source documents. Route requests narrowly: "
+                "cancellation or cancellation-fee questions use ['sop', 'agreement']; "
+                "service-credit questions use ['sop', 'agreement']; SLA questions use "
+                "['support_policy', 'agreement']; product status, webhook, known issue, "
+                "bulk upload, CSV, BOOKED/PICKED_UP, or bug questions use ['product_ops']. "
+                "Deprecated documents are excluded unless the user explicitly asks for "
+                "historical policy. Return only current authoritative evidence."
             ),
             "parameters": {
                 "type": "object",

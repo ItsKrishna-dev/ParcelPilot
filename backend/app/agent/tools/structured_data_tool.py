@@ -110,7 +110,24 @@ def run_structured_lookup(
         filters = tool_input.filters
 
         if entity == "account":
+            allowed_account_filters = {"account_id", "account_name"}
+            unsupported_filters = set(filters).difference(allowed_account_filters)
+            if unsupported_filters:
+                return StructuredLookupOutput(
+                    status=ToolResultStatus.OUT_OF_SCOPE,
+                    reason=f"Unsupported account filters: {', '.join(sorted(unsupported_filters))}",
+                )
+
+            if role == "customer" and filters.get("account_name"):
+                return StructuredLookupOutput(
+                    status=ToolResultStatus.ACCESS_DENIED,
+                    reason="Access denied: Customer sessions can only access their assigned account.",
+                )
+
             account_id = filters.get("account_id")
+            if not account_id and filters.get("account_name"):
+                acc = repo.get_account_by_name(db, filters.get("account_name")) if hasattr(repo, "get_account_by_name") else None
+                account_id = acc.account_id if acc else None
 
             if not account_id:
                 return StructuredLookupOutput(
@@ -137,6 +154,14 @@ def run_structured_lookup(
             )
 
         if entity == "order":
+            allowed_order_filters = {"order_id", "account_id"}
+            unsupported_filters = set(filters).difference(allowed_order_filters)
+            if unsupported_filters:
+                return StructuredLookupOutput(
+                    status=ToolResultStatus.OUT_OF_SCOPE,
+                    reason=f"Unsupported order filters: {', '.join(sorted(unsupported_filters))}",
+                )
+
             orders = repo.list_orders(
                 db,
                 role,
@@ -162,6 +187,14 @@ def run_structured_lookup(
             )
 
         if entity == "ticket":
+            allowed_ticket_filters = {"ticket_id", "account_id", "status"}
+            unsupported_filters = set(filters).difference(allowed_ticket_filters)
+            if unsupported_filters:
+                return StructuredLookupOutput(
+                    status=ToolResultStatus.OUT_OF_SCOPE,
+                    reason=f"Unsupported ticket filters: {', '.join(sorted(unsupported_filters))}",
+                )
+
             tickets = repo.list_tickets(
                 db,
                 role,
@@ -217,6 +250,7 @@ def run_structured_lookup(
                     overrides.cancellation_free_window_minutes
                 ),
                 contract_fee_inr=overrides.cancellation_fee_inr,
+                cancellation_requested_at=order.cancellation_requested_at,
             )
 
             status = (

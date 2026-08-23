@@ -10,3 +10,5 @@ node_modules/
 .pytest_cache/
 htmlcov/
 .coverage
+backend/storage/
+frontend/dist/

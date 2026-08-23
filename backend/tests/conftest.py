@@ -19,7 +19,7 @@ def _dt(value):
 
 @pytest.fixture(scope="session")
 def engine():
-    test_url = settings.database_url.replace("/parcelpilot", "/parcelpilot_test")
+    test_url = settings.database_url.rsplit("/", 1)[0] + "/parcelpilot_test"
     eng = create_engine(test_url)
     try:
         with eng.connect() as conn:
@@ -29,20 +29,43 @@ def engine():
         pytest.skip("Postgres test database not available -- start docker-compose db service.")
     Base.metadata.drop_all(eng)
     Base.metadata.create_all(eng)
+
+    # Apply RLS policies to test DB
+    try:
+        from pathlib import Path
+        rls_file = Path(__file__).resolve().parents[1] / "app" / "db" / "rls_policies.sql"
+        if rls_file.exists():
+            with eng.begin() as conn:
+                sql = rls_file.read_text()
+                statements = [s.strip() for s in sql.split(";") if s.strip()]
+                for statement in statements:
+                    conn.execute(text(statement))
+    except Exception:
+        pass
+
     yield eng
     Base.metadata.drop_all(eng)
 
 
 @pytest.fixture
 def db_session(engine):
+    from app.db.models import ContractRule, DocChunk, Escalation, PendingAction, AuditLog
+    from app.db.seed_data import CONTRACT_RULES_SEED
+
     Session = sessionmaker(bind=engine)
     session = Session()
 
+    session.query(Escalation).delete()
+    session.query(PendingAction).delete()
+    session.query(AuditLog).delete()
+    session.query(ContractRule).delete()
+    session.query(DocChunk).delete()
+    session.query(Document).delete()
     session.query(Order).delete()
     session.query(Ticket).delete()
     session.query(Account).delete()
-    session.query(Document).delete()
     session.query(SourceAuthorityRule).delete()
+    session.commit()
 
     for a in ACCOUNTS:
         session.add(Account(**a))
@@ -61,8 +84,11 @@ def db_session(engine):
         d["effective_date"] = _dt(d["effective_date"])
         d["raw_text"] = ""
         session.add(Document(**d))
+    session.flush()
     for r in SOURCE_AUTHORITY_RULES:
         session.add(SourceAuthorityRule(**r))
+    for cr in CONTRACT_RULES_SEED:
+        session.add(ContractRule(**cr))
     session.commit()
 
     yield session

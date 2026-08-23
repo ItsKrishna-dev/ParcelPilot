@@ -64,7 +64,16 @@ class ToolTraceEntry(BaseModel):
 
 class ChatResponse(BaseModel):
     answer: str
-    confidence: float
+    confidence: Optional[float] = None
     escalated: bool
     tool_trace: list[ToolTraceEntry]
     evidence: list[dict[str, Any]] = Field(default_factory=list)
+
+    answer_state: Optional[str] = None
+    workflow_complete: Optional[bool] = None
+    verification: Optional[str] = None
+    operational_severity: Optional[str] = None
+    escalation_required: Optional[bool] = None
+    intent_category: Optional[str] = None
+    intent_confidence: Optional[float] = None
+    intent_method: Optional[str] = None

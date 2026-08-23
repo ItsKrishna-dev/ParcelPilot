@@ -50,6 +50,13 @@ def calc_service_credit(
     contract_fixed_credit_inr: float | None = None,
     contract_credit_cap_inr: float | None = None,
 ) -> ServiceCreditResult:
+    if now.tzinfo is not None:
+        now = now.replace(tzinfo=None)
+    if pickup_window_end is not None and pickup_window_end.tzinfo is not None:
+        pickup_window_end = pickup_window_end.replace(tzinfo=None)
+    if pickup_actual_at is not None and pickup_actual_at.tzinfo is not None:
+        pickup_actual_at = pickup_actual_at.replace(tzinfo=None)
+
     if carrier_fault is None or customer_fault is None:
         return ServiceCreditResult(
             CreditDecision.NEEDS_VERIFICATION, 0.0, False,
@@ -89,12 +96,20 @@ def calc_service_credit(
     if contract_fixed_credit_inr is not None:
         credit = contract_fixed_credit_inr
         source = "signed customer agreement (overrides default credit amount)"
+        if contract_credit_cap_inr is not None:
+            credit = min(credit, contract_credit_cap_inr)
     else:
-        credit = min(DEFAULT_CREDIT_CAP_INR, shipment_fee_inr * DEFAULT_CREDIT_PCT_OF_FEE)
-        source = "03_Cancellation_and_Service_Credit_SOP_v4 s2"
-
-    if contract_credit_cap_inr is not None:
-        credit = min(credit, contract_credit_cap_inr)
+        effective_cap = (
+            contract_credit_cap_inr
+            if contract_credit_cap_inr is not None
+            else DEFAULT_CREDIT_CAP_INR
+        )
+        credit = min(effective_cap, shipment_fee_inr * DEFAULT_CREDIT_PCT_OF_FEE)
+        source = (
+            "signed customer agreement (overrides default credit cap)"
+            if contract_credit_cap_inr is not None
+            else "03_Cancellation_and_Service_Credit_SOP_v4 s2"
+        )
 
     requires_approval = credit > settings.manager_approval_threshold_inr
 

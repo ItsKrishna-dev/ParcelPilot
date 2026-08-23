@@ -93,6 +93,8 @@ def _call_provider(
     tools: list[dict] | None,
     timeout_seconds: float = 60.0,
 ) -> dict:
+    import time
+
     if not provider.api_key:
         raise LLMProviderError(
             f"No API key configured for provider '{provider.name}'."
@@ -121,35 +123,55 @@ def _call_provider(
         tools=tools,
     )
 
-    try:
-        response = httpx.post(
-            endpoint,
-            headers=headers,
-            json=body,
-            timeout=httpx.Timeout(
-                timeout_seconds,
-                connect=10.0,
-            ),
-        )
-    except httpx.TimeoutException as error:
-        raise LLMProviderError(
-            f"Provider '{provider.name}' timed out."
-        ) from error
-    except httpx.RequestError as error:
-        raise LLMProviderError(
-            f"Provider '{provider.name}' request failed: {error}"
-        ) from error
+    max_attempts = max(1, settings.llm_retry_max_attempts + 1)
+    last_response = None
 
-    if response.status_code >= 400:
-        detail = response.text[:1000]
+    for attempt in range(max_attempts):
+        try:
+            response = httpx.post(
+                endpoint,
+                headers=headers,
+                json=body,
+                timeout=httpx.Timeout(
+                    timeout_seconds,
+                    connect=10.0,
+                ),
+            )
+            last_response = response
+        except httpx.TimeoutException as error:
+            raise LLMProviderError(
+                f"Provider '{provider.name}' timed out."
+            ) from error
+        except httpx.RequestError as error:
+            raise LLMProviderError(
+                f"Provider '{provider.name}' request failed: {error}"
+            ) from error
 
+        if response.status_code == 429 and attempt < max_attempts - 1:
+            retry_after = response.headers.get("Retry-After")
+            wait_time = 1.0
+            if retry_after:
+                try:
+                    wait_time = min(float(retry_after), 5.0)
+                except ValueError:
+                    wait_time = 1.0
+            time.sleep(wait_time)
+            continue
+
+        break
+
+    if last_response is None:
+        raise LLMProviderError(f"Provider '{provider.name}' returned no response.")
+
+    if last_response.status_code >= 400:
+        detail = last_response.text[:1000]
         raise LLMProviderError(
             f"Provider '{provider.name}' returned HTTP "
-            f"{response.status_code}: {detail}"
+            f"{last_response.status_code}: {detail}"
         )
 
     try:
-        payload = response.json()
+        payload = last_response.json()
     except ValueError as error:
         raise LLMProviderError(
             f"Provider '{provider.name}' returned invalid JSON."

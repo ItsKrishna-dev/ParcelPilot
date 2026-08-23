@@ -251,58 +251,53 @@ def _extract_service_credit_rules(
         )
 
 
+def extract_contract_rules_for_document(db: Session, document: Document) -> int:
+    if document.doc_type != "agreement" or not document.account_id:
+        return 0
+
+    account = (
+        db.query(Account)
+        .filter(Account.account_id == document.account_id)
+        .one_or_none()
+    )
+    if account is None:
+        return 0
+
+    text = _normalized(document.raw_text)
+    if not text:
+        return 0
+
+    before_count = db.query(ContractRule).filter(
+        ContractRule.doc_id == document.doc_id
+    ).count()
+
+    _extract_sla_rules(db, account, document, text)
+    _extract_cancellation_rules(db, account, document, text)
+    _extract_service_credit_rules(db, account, document, text)
+
+    db.flush()
+
+    after_count = db.query(ContractRule).filter(
+        ContractRule.doc_id == document.doc_id
+    ).count()
+
+    return max(0, after_count - before_count)
+
+
 def extract_contract_rules(db: Session):
     documents = (
         db.query(Document)
         .filter(
             Document.doc_type == "agreement",
-            Document.status == "CURRENT",
+            Document.status.in_(["CURRENT", "ACTIVE"]),
             Document.account_id.isnot(None),
         )
         .all()
     )
 
     extracted_count = 0
-
     for document in documents:
-        account = (
-            db.query(Account)
-            .filter(Account.account_id == document.account_id)
-            .one_or_none()
-        )
-
-        if account is None:
-            continue
-
-        text = _normalized(document.raw_text)
-
-        if not text:
-            print(
-                f"[contract_rules] Skipping {document.filename}: "
-                "document.raw_text is empty."
-            )
-            continue
-
-        before_count = db.query(ContractRule).filter(
-            ContractRule.doc_id == document.doc_id
-        ).count()
-
-        _extract_sla_rules(db, account, document, text)
-        _extract_cancellation_rules(db, account, document, text)
-        _extract_service_credit_rules(db, account, document, text)
-
-        db.flush()
-
-        after_count = db.query(ContractRule).filter(
-            ContractRule.doc_id == document.doc_id
-        ).count()
-
-        extracted_count += max(0, after_count - before_count)
-
-        print(
-            f"[contract_rules] {document.filename}: "
-            f"{after_count} active structured rules"
-        )
+        extracted_count += extract_contract_rules_for_document(db, document)
 
     db.commit()
 

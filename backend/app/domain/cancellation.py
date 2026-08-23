@@ -45,8 +45,15 @@ def calc_cancellation_fee(
     contract_waives_fee: bool = False,
     contract_free_window_minutes: int | None = None,
     contract_fee_inr: float | None = None,
+    cancellation_requested_at: datetime | None = None,
 ) -> CancellationResult:
     status = (order_status or "").upper()
+    if now.tzinfo is not None:
+        now = now.replace(tzinfo=None)
+    if booked_at is not None and booked_at.tzinfo is not None:
+        booked_at = booked_at.replace(tzinfo=None)
+    if cancellation_requested_at is not None and cancellation_requested_at.tzinfo is not None:
+        cancellation_requested_at = cancellation_requested_at.replace(tzinfo=None)
 
     if status == "DRAFT":
         return CancellationResult(
@@ -87,7 +94,8 @@ def calc_cancellation_fee(
 
         free_window = contract_free_window_minutes or DEFAULT_FREE_WINDOW_MINUTES
         fee = contract_fee_inr if contract_fee_inr is not None else DEFAULT_LATE_CANCELLATION_FEE_INR
-        elapsed = now - booked_at
+        reference_time = cancellation_requested_at or now
+        elapsed = reference_time - booked_at
 
         if elapsed <= timedelta(minutes=free_window):
             return CancellationResult(

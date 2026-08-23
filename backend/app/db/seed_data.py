@@ -122,3 +122,68 @@ SOURCE_AUTHORITY_RULES = [
     dict(source_type="historical_ticket", doc_status="ADVISORY_ONLY", precedence_rank=999, applies_to_clause="general",
          notes="Context only. May contain incorrect guidance. Never used to compute a fee/credit/SLA number."),
 ]
+
+CONTRACT_RULES_SEED = [
+    # Northstar (ACCT-001, DOC-05)
+    dict(
+        account_id="ACCT-001", doc_id="DOC-05", clause_type="cancellation_fee",
+        rule_key="cancellation_fee_waived", value_boolean=True, value_number=None,
+        value_text=None, unit=None,
+        source_text="may cancel any BOOKED shipment before pickup with no cancellation fee",
+        is_active=True,
+    ),
+    dict(
+        account_id="ACCT-001", doc_id="DOC-05", clause_type="service_credit",
+        rule_key="service_credit_monthly_cap_inr", value_boolean=None, value_number=5000.0,
+        value_text=None, unit="INR",
+        source_text="Monthly aggregate service credits are capped at INR 5,000",
+        is_active=True,
+    ),
+    dict(
+        account_id="ACCT-001", doc_id="DOC-05", clause_type="sla",
+        rule_key="sla_p1_minutes", value_boolean=None, value_number=15.0,
+        value_text=None, unit="minutes", source_text="P1: 15 minutes", is_active=True,
+    ),
+    dict(
+        account_id="ACCT-001", doc_id="DOC-05", clause_type="sla",
+        rule_key="sla_p2_minutes", value_boolean=None, value_number=60.0,
+        value_text=None, unit="minutes", source_text="P2: 1 hour", is_active=True,
+    ),
+    dict(
+        account_id="ACCT-001", doc_id="DOC-05", clause_type="sla",
+        rule_key="sla_p3_minutes", value_boolean=None, value_number=480.0,
+        value_text=None, unit="minutes", source_text="P3: 8 business hours", is_active=True,
+    ),
+    # LumenWorks (ACCT-002, DOC-06)
+    dict(
+        account_id="ACCT-002", doc_id="DOC-06", clause_type="cancellation_fee",
+        rule_key="cancellation_fee_waived", value_boolean=False, value_number=None,
+        value_text=None, unit=None,
+        source_text="No special cancellation-fee waiver applies", is_active=True,
+    ),
+    dict(
+        account_id="ACCT-002", doc_id="DOC-06", clause_type="service_credit",
+        rule_key="service_credit_delay_threshold_hours", value_boolean=None, value_number=4.0,
+        value_text=None, unit="hours", source_text="pickup is more than 4 hours past", is_active=True,
+    ),
+    dict(
+        account_id="ACCT-002", doc_id="DOC-06", clause_type="service_credit",
+        rule_key="service_credit_fixed_amount_inr", value_boolean=None, value_number=300.0,
+        value_text=None, unit="INR", source_text="fixed INR 300 service credit", is_active=True,
+    ),
+    dict(
+        account_id="ACCT-002", doc_id="DOC-06", clause_type="sla",
+        rule_key="sla_p1_minutes", value_boolean=None, value_number=120.0,
+        value_text=None, unit="minutes", source_text="P1: 2 business hours", is_active=True,
+    ),
+    dict(
+        account_id="ACCT-002", doc_id="DOC-06", clause_type="sla",
+        rule_key="sla_p2_minutes", value_boolean=None, value_number=240.0,
+        value_text=None, unit="minutes", source_text="P2: 4 business hours", is_active=True,
+    ),
+    dict(
+        account_id="ACCT-002", doc_id="DOC-06", clause_type="sla",
+        rule_key="sla_p3_minutes", value_boolean=None, value_number=960.0,
+        value_text=None, unit="minutes", source_text="P3: 2 business days", is_active=True,
+    ),
+]

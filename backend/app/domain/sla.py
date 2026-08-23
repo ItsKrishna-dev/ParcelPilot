@@ -78,6 +78,11 @@ def check_sla_breach(
         contract_sla_minutes=contract_sla_minutes,
     )
 
+    if now.tzinfo is not None:
+        now = now.replace(tzinfo=None)
+    if ticket_created_at.tzinfo is not None:
+        ticket_created_at = ticket_created_at.replace(tzinfo=None)
+
     elapsed = (
         now - ticket_created_at
     ).total_seconds() / 60
