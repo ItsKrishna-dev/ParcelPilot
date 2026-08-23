@@ -41,7 +41,7 @@ export function normalizeApiError(error: unknown): UserFacingError {
       return {
         title: 'Backend Service Unavailable',
         message:
-          'Unable to connect to the ParcelPilot backend service (http://127.0.0.1:8000). Please check server logs.',
+          'Unable to connect to the ParcelPilot backend service. Please check your network connection or server status.',
         code: 'BACKEND_UNAVAILABLE',
       };
     }

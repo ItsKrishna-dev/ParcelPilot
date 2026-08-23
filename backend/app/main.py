@@ -14,17 +14,31 @@ from app.config import settings
 
 def _parse_cors_origins() -> list[str]:
     """
-    Parse the comma-separated CORS_ORIGINS setting into a deduplicated list.
+    Parse CORS origins from settings, CORS_ORIGINS, CORS_ORIGIN, and FRONTEND_URL.
     Strips whitespace and ignores empty tokens.
     """
-    raw = settings.cors_origins or ""
+    raw_sources = [
+        settings.cors_origins or "",
+        os.environ.get("CORS_ORIGINS", ""),
+        os.environ.get("CORS_ORIGIN", ""),
+        os.environ.get("FRONTEND_URL", ""),
+    ]
     seen: set[str] = set()
-    origins: list[str] = []
-    for part in raw.split(","):
-        origin = part.strip().rstrip("/")
-        if origin and origin not in seen:
-            seen.add(origin)
-            origins.append(origin)
+    origins: list[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+    for orig in origins:
+        seen.add(orig)
+
+    for raw in raw_sources:
+        for part in raw.split(","):
+            origin = part.strip().rstrip("/")
+            if origin and origin not in seen:
+                seen.add(origin)
+                origins.append(origin)
     return origins
 
 
@@ -71,6 +85,7 @@ _cors_origins = _parse_cors_origins()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
+    allow_origin_regex=r"^https:\/\/.*\.vercel\.app$",
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=False,
