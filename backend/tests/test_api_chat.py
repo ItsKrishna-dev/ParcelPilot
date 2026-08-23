@@ -163,3 +163,43 @@ def test_chat_api_access_denied_other_account():
     data = resp.json()
     assert data["confidence"] <= 0.55
     assert data["escalated"] is True
+
+
+def test_chat_api_multi_turn_history():
+    with patch("app.agent.orchestrator.chat_completion") as mock_llm:
+        mock_llm.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "SwiftShip is the assigned carrier for this shipment.",
+                        "tool_calls": None,
+                    }
+                }
+            ]
+        }
+
+        resp = client.post(
+            "/chat",
+            headers={"Authorization": "Bearer cust-northstar"},
+            json={
+                "message": "What is the carrier for it?",
+                "history": [
+                    {
+                        "role": "user",
+                        "content": "Can I cancel ORD-1001 without a fee?",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Yes, ORD-1001 can be cancelled without fee.",
+                    },
+                ],
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "SwiftShip" in data["answer"]
+        assert "confidence" in data
+        assert "escalated" in data
+        assert "tool_trace" in data
+        assert "evidence" in data

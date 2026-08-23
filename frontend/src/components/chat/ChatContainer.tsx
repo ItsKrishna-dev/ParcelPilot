@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Send, RefreshCw, AlertCircle, Sparkles } from 'lucide-react';
 import { MockSession } from '../../types/auth';
 import { ChatMessage } from '../../types/ui';
-import { sendChatMessage } from '../../api/chat';
+import { sendChatMessage, ChatHistoryItem } from '../../api/chat';
 import { normalizeApiError } from '../../lib/errorUtils';
 import { UserFacingError } from '../../types/trust';
 import { WelcomeState } from './WelcomeState';
@@ -47,6 +47,12 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ session }) => {
 
     const trimmedText = text.trim();
 
+    // Capture recent history before adding the new message
+    const history: ChatHistoryItem[] = messages.slice(-6).map((m) => ({
+      role: m.sender === 'user' ? 'user' : 'assistant',
+      content: m.text,
+    }));
+
     const userMessage: ChatMessage = {
       id: `user-${Date.now()}`,
       sender: 'user',
@@ -64,7 +70,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ session }) => {
     setApiError(null);
 
     try {
-      const response = await sendChatMessage(trimmedText, session.sessionId);
+      const response = await sendChatMessage(trimmedText, session.sessionId, history);
 
       const agentMessage: ChatMessage = {
         id: `agent-${Date.now()}`,

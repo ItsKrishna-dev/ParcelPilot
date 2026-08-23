@@ -92,7 +92,10 @@ def has_domain_content(message: str) -> bool:
             return True
     return False
 
-def route_user_message(message: str) -> IntentRoute:
+CONTEXT_FOLLOW_UP_PHRASES = {"no", "nope", "nah", "yes", "yeah", "sure", "proceed", "confirm", "cancel that"}
+STANDALONE_ACKNOWLEDGEMENTS = {"thanks", "thank you", "okay", "ok", "got it", "perfect", "great", "awesome", "none", "nevermind", "stop"}
+
+def route_user_message(message: str, history: Optional[list[dict]] = None) -> IntentRoute:
     # 1. Check domain content first as a safety override
     if has_domain_content(message):
         return IntentRoute(
@@ -113,7 +116,22 @@ def route_user_message(message: str) -> IntentRoute:
             should_bypass_agent=True,
             reason="Matched obvious greeting phrase.",
         )
-    if normalized in OBVIOUS_ACKNOWLEDGEMENTS:
+
+    # If there is active conversation history with an assistant question/prompt,
+    # route contextual follow-ups ("yes", "no", "proceed", etc.) to the agent with context.
+    has_prior_assistant_turn = bool(
+        history and any(h.get("role") == "assistant" and h.get("content") for h in history)
+    )
+    if has_prior_assistant_turn and normalized in CONTEXT_FOLLOW_UP_PHRASES:
+        return IntentRoute(
+            category=IntentCategory.SUPPORT_QUERY,
+            confidence=0.95,
+            method="contextual_follow_up",
+            should_bypass_agent=False,
+            reason="Contextual follow-up response to prior conversation turn.",
+        )
+
+    if normalized in OBVIOUS_ACKNOWLEDGEMENTS or normalized in STANDALONE_ACKNOWLEDGEMENTS or normalized in CONTEXT_FOLLOW_UP_PHRASES:
         return IntentRoute(
             category=IntentCategory.ACKNOWLEDGEMENT,
             confidence=0.99,

@@ -10,7 +10,7 @@ than framework convenience.
 
 import json
 import time
-from typing import List, Set
+from typing import List, Optional, Set
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
@@ -142,11 +142,22 @@ def _deduplicate_evidence(evidence: list[dict], max_items: int = 6) -> list[dict
     return unique
 
 
-def run_turn(db: Session, session: UserSession, user_message: str) -> ChatResponse:
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_message},
-    ]
+def run_turn(
+    db: Session,
+    session: UserSession,
+    user_message: str,
+    history: Optional[List[dict]] = None,
+) -> ChatResponse:
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    if history:
+        # Include up to the last 6 valid history turns to provide context while keeping prompt tokens lean
+        for item in history[-6:]:
+            role = item.get("role")
+            content = item.get("content")
+            if role in ("user", "assistant") and content and isinstance(content, str):
+                messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": user_message})
+
     trace: List[ToolTraceEntry] = []
     retrieval_hit = False
     needs_verification = False
@@ -159,8 +170,21 @@ def run_turn(db: Session, session: UserSession, user_message: str) -> ChatRespon
     order_match = re.search(r"ORD-\d+", user_message, re.IGNORECASE)
     extracted_order_id = order_match.group(0).upper() if order_match else None
 
+    # If order ID was not specified in the current turn, check recent conversation history
+    if not extracted_order_id and history:
+        for prev in reversed(history[-4:]):
+            prev_match = re.search(r"ORD-\d+", prev.get("content", ""), re.IGNORECASE)
+            if prev_match:
+                extracted_order_id = prev_match.group(0).upper()
+                break
+
     # Detect if user request requires a deterministic calculation or specific document routing
     required_calc = detect_calculation_requirement(user_message)
+    if required_calc is None and history and len(user_message.split()) <= 6:
+        last_turn_text = " ".join([h.get("content", "") for h in history[-2:]])
+        combined_text = f"{last_turn_text} {user_message}"
+        required_calc = detect_calculation_requirement(combined_text)
+
     routed_doc_types = route_document_types(user_message)
     max_iterations = max(1, settings.llm_max_tool_iterations)
 

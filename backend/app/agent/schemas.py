@@ -16,6 +16,11 @@ class ToolResultStatus:
     ESCALATE = "ESCALATE"
 
 
+class MessageHistoryItem(BaseModel):
+    role: Literal["user", "assistant", "system"]
+    content: str
+
+
 class DocSearchInput(BaseModel):
     query: str
     doc_types: Optional[list[str]] = None

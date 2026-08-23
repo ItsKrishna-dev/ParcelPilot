@@ -1,9 +1,10 @@
+from typing import Optional
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.agent.orchestrator import run_turn
-from app.agent.schemas import ChatResponse
+from app.agent.schemas import ChatResponse, MessageHistoryItem
 from app.auth.dependencies import get_current_session
 from app.auth.mock_auth import Session as UserSession
 from app.db.session import get_db
@@ -13,6 +14,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000)
+    history: Optional[list[MessageHistoryItem]] = Field(default_factory=list)
 
 
 @router.post("", response_model=ChatResponse)
@@ -23,11 +25,17 @@ def chat(
 ):
     try:
         from app.agent.intent_router import route_user_message, build_conversational_response
-        route = route_user_message(req.message)
+        history_dicts = (
+            [{"role": h.role, "content": h.content} for h in req.history]
+            if req.history
+            else []
+        )
+
+        route = route_user_message(req.message, history=history_dicts)
         if route.should_bypass_agent:
-            conv_resp = build_conversational_response(route, session, req.message)
+            conv_resp = build_conversational_response(route, session, req.message, history=history_dicts)
             return ChatResponse(**conv_resp)
-        return run_turn(db, session, req.message)
+        return run_turn(db, session, req.message, history=history_dicts)
     except Exception as e:
         return ChatResponse(
             answer=(
