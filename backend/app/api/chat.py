@@ -25,7 +25,7 @@ def chat(
         from app.agent.intent_router import route_user_message, build_conversational_response
         route = route_user_message(req.message)
         if route.should_bypass_agent:
-            conv_resp = build_conversational_response(route, session)
+            conv_resp = build_conversational_response(route, session, req.message)
             return ChatResponse(**conv_resp)
         return run_turn(db, session, req.message)
     except Exception as e:

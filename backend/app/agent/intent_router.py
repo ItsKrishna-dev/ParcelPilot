@@ -28,7 +28,10 @@ class IntentRoute:
     reason: str
 
 OBVIOUS_GREETINGS = {"hello", "hi", "hey", "good morning", "good afternoon", "good evening"}
-OBVIOUS_ACKNOWLEDGEMENTS = {"thanks", "thank you", "okay", "got it", "perfect"}
+OBVIOUS_ACKNOWLEDGEMENTS = {
+    "thanks", "thank you", "okay", "ok", "got it", "perfect", "great", "awesome",
+    "no", "nope", "nah", "yes", "yeah", "sure", "nevermind", "none", "stop", "cancel that"
+}
 OBVIOUS_HELP = {"help", "what can you do", "what do you support", "how can you help", "what can you help me with"}
 
 # Small set of intent prototypes for Option A (SentenceTransformers)
@@ -168,11 +171,17 @@ def route_user_message(message: str) -> IntentRoute:
         reason="Unclassified conversational query or potential support inquiry.",
     )
 
-def build_conversational_response(route: IntentRoute, session: UserSession) -> dict:
+def build_conversational_response(route: IntentRoute, session: UserSession, user_message: str = "") -> dict:
+    norm = normalize_text(user_message)
     if route.category == IntentCategory.GREETING:
         answer = "Hello! I’m here to help with your orders, cancellations, service credits, shipment status, and support questions."
     elif route.category == IntentCategory.ACKNOWLEDGEMENT:
-        answer = "You're welcome! Let me know if you need anything else."
+        if norm in {"no", "nope", "nah", "nevermind", "none", "cancel that", "stop"}:
+            answer = "Understood! Let me know whenever you're ready or if you have any other questions."
+        elif norm in {"yes", "yeah", "sure"}:
+            answer = "Great! Please let me know how I can assist you or which order or ticket you'd like to check."
+        else:
+            answer = "You're welcome! Let me know if you need anything else."
     elif route.category == IntentCategory.GENERAL_HELP:
         if session.role == "customer":
             answer = "I can help with your orders, cancellations, service credits, shipment status, and support questions."

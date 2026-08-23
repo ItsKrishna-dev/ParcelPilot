@@ -91,7 +91,7 @@ def _call_provider(
     provider: ProviderConfig,
     messages: list[dict],
     tools: list[dict] | None,
-    timeout_seconds: float = 60.0,
+    timeout_seconds: float = 15.0,
 ) -> dict:
     import time
 
@@ -134,7 +134,7 @@ def _call_provider(
                 json=body,
                 timeout=httpx.Timeout(
                     timeout_seconds,
-                    connect=10.0,
+                    connect=5.0,
                 ),
             )
             last_response = response
