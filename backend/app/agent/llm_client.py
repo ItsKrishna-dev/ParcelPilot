@@ -123,7 +123,8 @@ def _call_provider(
         tools=tools,
     )
 
-    max_attempts = max(1, settings.llm_retry_max_attempts + 1)
+    import re
+    max_attempts = max(3, settings.llm_retry_max_attempts + 1)
     last_response = None
 
     for attempt in range(max_attempts):
@@ -148,13 +149,22 @@ def _call_provider(
             ) from error
 
         if response.status_code == 429 and attempt < max_attempts - 1:
+            wait_time = 1.5
             retry_after = response.headers.get("Retry-After")
-            wait_time = 1.0
             if retry_after:
                 try:
-                    wait_time = min(float(retry_after), 5.0)
+                    wait_time = float(retry_after)
                 except ValueError:
-                    wait_time = 1.0
+                    pass
+            else:
+                # Groq returns cooldown in body text: "Please try again in 1.14s."
+                try:
+                    match = re.search(r"try again in ([\d\.]+)s", response.text)
+                    if match:
+                        wait_time = float(match.group(1)) + 0.3
+                except Exception:
+                    pass
+            wait_time = min(max(wait_time, 0.5), 6.0)
             time.sleep(wait_time)
             continue
 
